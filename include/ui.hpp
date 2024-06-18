@@ -1,4 +1,15 @@
 #pragma once
+#if __has_include(<Arduino.h>)
+#include <Arduino.h>
+#else
+#include <stdint.h>
+#include <stddef.h>
+#include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <math.h>
+#endif
+
 #include <gfx.hpp>
 #include <uix.hpp>
 #include "assets/warhol320.hpp"
@@ -22,6 +33,11 @@ class warhol_box : public uix::control<ControlSurfaceType> {
     using color_type = gfx::color<pixel_type>;
     using color32_type = gfx::color<gfx::rgba_pixel<32>>;
    private:
+#ifndef ARDUINO
+    static uint32_t millis() { return pdTICKS_TO_MS(xTaskGetTickCount()); }
+    static int random() { return rand(); }
+    static void randomSeed(int value) {return srand(value);}
+#endif
     int draw_state;
     bitmap_type m_bmp;
     bitmap_type m_bmp2;
@@ -218,7 +234,6 @@ class warhol_box : public uix::control<ControlSurfaceType> {
         // draw the bars
         for (size_t i = 0; i < count; ++i) {
             gfx::spoint16& pt = pts[i];
-            gfx::spoint16& d = dts[i];
             gfx::srect16 r(pt,size/2);
             if (clip.intersects(r)) {
                 gfx::rgba_pixel<32> col;
