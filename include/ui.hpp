@@ -24,6 +24,7 @@ class warhol_box : public uix::control<ControlSurfaceType> {
    private:
     int draw_state;
     bitmap_type m_bmp;
+    bitmap_type m_bmp2;
     constexpr static const size_t count = 3;
     constexpr static const int16_t size = 60;
     gfx::spoint16 pts[count];        // locations
@@ -31,6 +32,10 @@ class warhol_box : public uix::control<ControlSurfaceType> {
     gfx::rgba_pixel<32> cls[count];  // colors
     gfx::rgba_pixel<32> cls_next[count];
     float cls_blend[count];
+    gfx::rgba_pixel<32> bg; // background color
+    gfx::rgba_pixel<32> bg_next;
+    float bg_blend;
+    int iteration;
     static void* alloc(size_t size) {
         return heap_caps_malloc(size,MALLOC_CAP_SPIRAM);
     }
@@ -38,6 +43,14 @@ class warhol_box : public uix::control<ControlSurfaceType> {
         deallocate();
         m_bmp = gfx::create_bitmap<pixel_type,palette_type>(gfx::size16(320,240),this->palette(),alloc);
         if(!m_bmp.begin()) {
+            m_bmp = bitmap_type({0,0},nullptr);
+            return;
+        }
+        m_bmp2 = gfx::create_bitmap<pixel_type,palette_type>(gfx::size16(320,240),this->palette(),alloc);
+        if(!m_bmp2.begin()) {
+            free(m_bmp.begin());
+            m_bmp = bitmap_type({0,0},nullptr);
+            m_bmp2 = bitmap_type({0,0},nullptr);
             return;
         }
         m_bmp.fill(m_bmp.bounds(),pixel_type());
@@ -46,11 +59,16 @@ class warhol_box : public uix::control<ControlSurfaceType> {
         gfx::jpeg_image::dimensions(&warhol320,&dim);
         warhol320.seek(0);
         gfx::draw::image(m_bmp,dim.bounds().center(m_bmp.bounds()),&warhol320);
+        memcpy(m_bmp2.begin(),m_bmp.begin(),bitmap_type::sizeof_buffer(m_bmp.dimensions()));
     }
     void deallocate() {
         if(m_bmp.begin()) {
             free(m_bmp.begin());
             m_bmp = bitmap_type({0,0},nullptr);
+        }
+        if(m_bmp2.begin()) {
+            free(m_bmp2.begin());
+            m_bmp2 = bitmap_type({0,0},nullptr);
         }
     }
     gfx::rgba_pixel<32> select_color(int index) {
@@ -120,8 +138,12 @@ class warhol_box : public uix::control<ControlSurfaceType> {
         
         randomSeed(millis());
         if(draw_state==0) {
+            iteration = 0;
             allocate();
             if(m_bmp.begin()) {
+                bg_blend = 0;
+                bg = select_color(random());
+                bg_next = select_color(random());
                 size_t i;
                 for (i = 0; i < count; ++i) {
                     cls_blend[i]=0;
@@ -139,6 +161,16 @@ class warhol_box : public uix::control<ControlSurfaceType> {
                 }
                 draw_state = 1;
             }
+        } else if(iteration==10) {
+            iteration = 0;
+            if(m_bmp2.begin()) {
+                memcpy(m_bmp2.begin(),m_bmp.begin(),bitmap_type::sizeof_buffer(m_bmp.dimensions()));
+                gfx::rgba_pixel<32> px;
+                bg_next.blend(bg,bg_blend,&px);
+                gfx::draw::filled_rectangle(m_bmp2,m_bmp2.bounds(),px);
+            }
+        } else {
+            ++iteration;
         }
     }
     virtual void on_after_render() {
@@ -166,15 +198,23 @@ class warhol_box : public uix::control<ControlSurfaceType> {
                         cls_next[i]=select_color(random());
                         cls_blend[i]=0;
                     }
+                    if(iteration==0) {
+                        bg_blend+=.1;
+                        if(bg_blend>=1.1) {
+                            bg = bg_next;
+                            bg_next = select_color(random());
+                            bg_blend = 0;
+                        }
+                    }
                 }
 
                 break;
         }
     }
     virtual void on_paint(control_surface_type &destination, const gfx::srect16 &clip) override {
-        gfx::srect16 sr=(gfx::srect16)m_bmp.bounds().center(destination.bounds());
+        gfx::srect16 sr=(gfx::srect16)m_bmp2.bounds().center(destination.bounds());
         sr=sr.crop(clip);
-        gfx::draw::bitmap(destination,sr,m_bmp,(gfx::rect16)clip);
+        gfx::draw::bitmap(destination,sr,m_bmp2,(gfx::rect16)clip);
         // draw the bars
         for (size_t i = 0; i < count; ++i) {
             gfx::spoint16& pt = pts[i];
