@@ -20,14 +20,17 @@ class warhol_box : public uix::control<ControlSurfaceType> {
     using palette_type = typename base_type::palette_type;
     using bitmap_type = gfx::bitmap<pixel_type, palette_type>;
     using color_type = gfx::color<pixel_type>;
+    using color32_type = gfx::color<gfx::rgba_pixel<32>>;
    private:
     int draw_state;
     bitmap_type m_bmp;
-    constexpr static const size_t count = 6;
-    constexpr static const int16_t width = 4;
+    constexpr static const size_t count = 3;
+    constexpr static const int16_t size = 60;
     gfx::spoint16 pts[count];        // locations
     gfx::spoint16 dts[count];        // deltas
     gfx::rgba_pixel<32> cls[count];  // colors
+    gfx::rgba_pixel<32> cls_next[count];
+    float cls_blend[count];
     static void* alloc(size_t size) {
         return heap_caps_malloc(size,MALLOC_CAP_SPIRAM);
     }
@@ -50,7 +53,34 @@ class warhol_box : public uix::control<ControlSurfaceType> {
             m_bmp = bitmap_type({0,0},nullptr);
         }
     }
-
+    gfx::rgba_pixel<32> select_color(int index) {
+        gfx::rgba_pixel<32> result;
+        switch(index%7) {
+            case 0:
+                result=color32_t::blue;
+                break;
+            case 1:
+                result = color32_t::red;
+                break;
+            case 2:
+                result = color32_t::orange;
+                break;
+            case 3:
+                result = color32_t::red;
+                break;
+            case 4:
+                result = color32_t::green;
+                break;
+            case 5:
+                result = color32_t::cyan;
+                break;
+            default:
+                result = color32_t::purple;
+                break;
+        }
+        result.template channel<gfx::channel_name::A>((random() % 180) + 32);
+        return result;
+    }
    public:
     warhol_box(uix::invalidation_tracker &parent, const palette_type *palette = nullptr)
         : base_type(parent, palette) ,draw_state(0),m_bmp({0,0},nullptr) {
@@ -87,38 +117,25 @@ class warhol_box : public uix::control<ControlSurfaceType> {
         
     }
     virtual void on_before_render() override {
+        
         randomSeed(millis());
         if(draw_state==0) {
             allocate();
             if(m_bmp.begin()) {
                 size_t i;
                 for (i = 0; i < count; ++i) {
-                    if ((i & 1)) {
-                        pts[i] = gfx::spoint16(0, (random() % (this->dimensions().height - width)) + width / 2);
-                        dts[i] = {0, 0};
-                        // random deltas. Retry on (dy=0)
-                        while (dts[i].y == 0) {
-                            dts[i].y = (random() % 5) - 2;
-                        }
-                    } else {
-                        pts[i] = gfx::spoint16((random() % (this->dimensions().width - width)) + width / 2, 0);
-                        dts[i] = {0, 0};
-                        // random deltas. Retry on (dx=0)
-                        while (dts[i].x == 0) {
-                            dts[i].x = (random() % 5) - 2;
-                        }
+                    cls_blend[i]=0;
+                    pts[i] = gfx::spoint16((random() % (this->dimensions().width - size)) + size / 2, (random() % (this->dimensions().height - size)) + size / 2);
+                    dts[i] = {0, 0};
+                    // random deltas. Retry on (dy=0)
+                    while (dts[i].x == 0) {
+                        dts[i].x = (random() % 5) - 2;
                     }
-                    // random color RGBA8888
-                    gfx::ega_palette<gfx::rgba_pixel<32>> pal;
-                    int ci = 1;
-                    while(ci==0 || ci==1 || ci==8 || ci==9) {
-                        ci=(random()%8)+8;
+                    while (dts[i].y == 0) {
+                        dts[i].y = (random() % 5) - 2;
                     }
-                    gfx::indexed_pixel<4> epx(ci);
-                    gfx::rgba_pixel<32> px;
-                    pal.map(epx,&px);
-                    px.template channel<gfx::channel_name::A>((random() % 180) + 32);
-                    cls[i]=px;
+                    cls[i]=select_color(i);
+                    cls_next[i]=select_color(random());
                 }
                 draw_state = 1;
             }
@@ -137,13 +154,20 @@ class warhol_box : public uix::control<ControlSurfaceType> {
                     pt.y += d.y;
                     // if it is about to hit the edge, invert
                     // the respective deltas
-                    if (pt.x + d.x + -width / 2 < 0 || pt.x + d.x + width / 2 > this->bounds().x2) {
+                    if (pt.x + d.x + -size / 2 < 0 || pt.x + d.x + size / 2 > this->bounds().x2) {
                         d.x = -d.x;
                     }
-                    if (pt.y + d.y + -width / 2 < 0 || pt.y + d.y + width / 2 > this->bounds().y2) {
+                    if (pt.y + d.y + -size / 2 < 0 || pt.y + d.y + size / 2 > this->bounds().y2) {
                         d.y = -d.y;
                     }
+                    cls_blend[i]+=.1;
+                    if(cls_blend[i]>=1.1) {
+                        cls[i]=cls_next[i];
+                        cls_next[i]=select_color(random());
+                        cls_blend[i]=0;
+                    }
                 }
+
                 break;
         }
     }
@@ -155,14 +179,10 @@ class warhol_box : public uix::control<ControlSurfaceType> {
         for (size_t i = 0; i < count; ++i) {
             gfx::spoint16& pt = pts[i];
             gfx::spoint16& d = dts[i];
-            gfx::srect16 r;
-            if (d.y == 0) {
-                r = gfx::srect16(pt.x - width / 2, 0, pt.x + width / 2, this->bounds().y2);
-            } else {
-                r = gfx::srect16(0, pt.y - width / 2, this->bounds().x2, pt.y + width / 2);
-            }
+            gfx::srect16 r(pt,size/2);
             if (clip.intersects(r)) {
-                gfx::rgba_pixel<32>& col = cls[i];
+                gfx::rgba_pixel<32> col;
+                cls_next[i].blend(cls[i],cls_blend[i],&col);
                 gfx::draw::filled_rectangle(destination, r, col, &clip);
             }
         }
