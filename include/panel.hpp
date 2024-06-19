@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include "ui.hpp"
 // use two 32KB buffers (DMA)
-constexpr const size_t panel_transfer_buffer_size = 32*1024;
+constexpr const size_t panel_transfer_buffer_size = 320*60*2;
 extern uint8_t* panel_transfer_buffer1;
 extern uint8_t* panel_transfer_buffer2;
 
