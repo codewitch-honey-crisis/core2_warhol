@@ -5,14 +5,17 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <esp_heap_caps.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include <math.h>
 #endif
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
 
 #include <gfx.hpp>
 #include <uix.hpp>
-#include "assets/warhol320.hpp"
+
+extern gfx::const_buffer_stream warhol_stm;
+gfx::jpg_image warhol_img(warhol_stm);
 // colors for the UI
 using color_t = gfx::color<gfx::rgb_pixel<16>>; // native
 using color32_t = gfx::color<gfx::rgba_pixel<32>>; // uix
@@ -41,6 +44,8 @@ class warhol_box : public uix::control<ControlSurfaceType> {
     int draw_state;
     bitmap_type m_bmp;
     bitmap_type m_bmp2;
+    bitmap_type m_bmp3;
+    bitmap_type* m_current_bmp;
     constexpr static const size_t count = 3;
     constexpr static const int16_t size = 60;
     gfx::spoint16 pts[count];        // locations
@@ -51,33 +56,69 @@ class warhol_box : public uix::control<ControlSurfaceType> {
     gfx::rgba_pixel<32> bg; // background color
     gfx::rgba_pixel<32> bg_next;
     float bg_blend;
-    int iteration;
+    TaskHandle_t bg_task_handle;
     static void* alloc(size_t size) {
         return heap_caps_malloc(size,MALLOC_CAP_SPIRAM);
     }
+    static void bg_task(void* arg) {
+        warhol_box& me = *(warhol_box*)arg;
+        while(1) {
+            if(me.m_current_bmp!=&me.m_bmp2) {
+                if(me.m_bmp2.begin()) {
+                    memcpy(me.m_bmp2.begin(),me.m_bmp.begin(),bitmap_type::sizeof_buffer(me.m_bmp.dimensions()));
+                    gfx::rgba_pixel<32> px;
+                    me.bg_next.blend(me.bg,me.bg_blend,&px);
+                    gfx::draw::filled_rectangle(me.m_bmp2,me.m_bmp2.bounds(),px);
+                }
+                me.m_current_bmp=&me.m_bmp2;
+            } else {
+                if(me.m_bmp3.begin()) {
+                    memcpy(me.m_bmp3.begin(),me.m_bmp.begin(),bitmap_type::sizeof_buffer(me.m_bmp.dimensions()));
+                    gfx::rgba_pixel<32> px;
+                    me.bg_next.blend(me.bg,me.bg_blend,&px);
+                    gfx::draw::filled_rectangle(me.m_bmp3,me.m_bmp3.bounds(),px);
+                }
+                me.m_current_bmp=&me.m_bmp3;
+            }
+            vTaskDelay(1);
+            
+        }
+    }
     void allocate() {
         deallocate();
-        m_bmp = gfx::create_bitmap<pixel_type,palette_type>(gfx::size16(320,240),this->palette(),alloc);
+        m_bmp = gfx::create_bitmap<pixel_type,palette_type>(gfx::size16(320,240),alloc,this->palette());
         if(!m_bmp.begin()) {
             m_bmp = bitmap_type({0,0},nullptr);
             return;
         }
-        m_bmp2 = gfx::create_bitmap<pixel_type,palette_type>(gfx::size16(320,240),this->palette(),alloc);
+        m_bmp2 = gfx::create_bitmap<pixel_type,palette_type>(gfx::size16(320,240),alloc,this->palette());
         if(!m_bmp2.begin()) {
-            free(m_bmp.begin());
-            m_bmp = bitmap_type({0,0},nullptr);
-            m_bmp2 = bitmap_type({0,0},nullptr);
+            deallocate();
             return;
         }
+        m_bmp3 = gfx::create_bitmap<pixel_type,palette_type>(gfx::size16(320,240),alloc,this->palette());
+        if(!m_bmp3.begin()) {
+            deallocate();
+            return;
+        }
+        xTaskCreatePinnedToCore(bg_task,"bg_task",4096,this,24,&bg_task_handle,1-xTaskGetCoreID(xTaskGetCurrentTaskHandle()));
+        if(bg_task_handle==nullptr) {
+            deallocate();
+            return;
+        }
+        m_current_bmp = &m_bmp2;
         m_bmp.fill(m_bmp.bounds(),pixel_type());
-        warhol320.seek(0);
-        gfx::size16 dim;
-        gfx::jpeg_image::dimensions(&warhol320,&dim);
-        warhol320.seek(0);
-        gfx::draw::image(m_bmp,dim.bounds().center(m_bmp.bounds()),&warhol320);
+        warhol_img.initialize();
+        gfx::size16 dim=warhol_img.dimensions();
+        gfx::draw::image(m_bmp,dim.bounds().center(m_bmp.bounds()),warhol_img);
         memcpy(m_bmp2.begin(),m_bmp.begin(),bitmap_type::sizeof_buffer(m_bmp.dimensions()));
+        
     }
     void deallocate() {
+        if(bg_task_handle!=nullptr) {
+            vTaskDelete(bg_task_handle);
+            bg_task_handle = nullptr;
+        }
         if(m_bmp.begin()) {
             free(m_bmp.begin());
             m_bmp = bitmap_type({0,0},nullptr);
@@ -85,6 +126,10 @@ class warhol_box : public uix::control<ControlSurfaceType> {
         if(m_bmp2.begin()) {
             free(m_bmp2.begin());
             m_bmp2 = bitmap_type({0,0},nullptr);
+        }
+        if(m_bmp3.begin()) {
+            free(m_bmp3.begin());
+            m_bmp3 = bitmap_type({0,0},nullptr);
         }
     }
     gfx::rgba_pixel<32> select_color(int index) {
@@ -117,7 +162,7 @@ class warhol_box : public uix::control<ControlSurfaceType> {
     }
    public:
     warhol_box(uix::invalidation_tracker &parent, const palette_type *palette = nullptr)
-        : base_type(parent, palette) ,draw_state(0),m_bmp({0,0},nullptr) {
+        : base_type(parent, palette) ,draw_state(0),m_bmp({0,0},nullptr),m_bmp2({0,0},nullptr),m_bmp3({0,0},nullptr),m_current_bmp(nullptr),bg_task_handle(nullptr) {
     }
     warhol_box(warhol_box &&rhs) : m_bmp({0,0},nullptr) {
         draw_state = 0;
@@ -150,11 +195,9 @@ class warhol_box : public uix::control<ControlSurfaceType> {
     virtual void on_release() override {
         
     }
-    virtual void on_before_render() override {
-        
+    virtual void on_before_paint() override {
         randomSeed(millis());
         if(draw_state==0) {
-            iteration = 0;
             allocate();
             if(m_bmp.begin()) {
                 bg_blend = 0;
@@ -177,19 +220,10 @@ class warhol_box : public uix::control<ControlSurfaceType> {
                 }
                 draw_state = 1;
             }
-        } else if(iteration==10) {
-            iteration = 0;
-            if(m_bmp2.begin()) {
-                memcpy(m_bmp2.begin(),m_bmp.begin(),bitmap_type::sizeof_buffer(m_bmp.dimensions()));
-                gfx::rgba_pixel<32> px;
-                bg_next.blend(bg,bg_blend,&px);
-                gfx::draw::filled_rectangle(m_bmp2,m_bmp2.bounds(),px);
-            }
-        } else {
-            ++iteration;
-        }
+        } 
+        
     }
-    virtual void on_after_render() {
+    virtual void on_after_paint() {
         switch (draw_state) {
             case 0:
                 break;
@@ -214,23 +248,22 @@ class warhol_box : public uix::control<ControlSurfaceType> {
                         cls_next[i]=select_color(random());
                         cls_blend[i]=0;
                     }
-                    if(iteration==0) {
-                        bg_blend+=.1;
-                        if(bg_blend>=1.1) {
-                            bg = bg_next;
-                            bg_next = select_color(random());
-                            bg_blend = 0;
-                        }
+                    bg_blend+=.1;
+                    if(bg_blend>=1.1) {
+                        bg = bg_next;
+                        bg_next = select_color(random());
+                        bg_blend = 0;
                     }
+                
                 }
 
                 break;
         }
     }
     virtual void on_paint(control_surface_type &destination, const gfx::srect16 &clip) override {
-        gfx::srect16 sr=(gfx::srect16)m_bmp2.bounds().center(destination.bounds());
+        gfx::srect16 sr=(gfx::srect16)m_current_bmp->bounds().center(destination.bounds());
         sr=sr.crop(clip);
-        gfx::draw::bitmap(destination,sr,m_bmp2,(gfx::rect16)clip);
+        gfx::draw::bitmap(destination,sr,*m_current_bmp,(gfx::rect16)clip);
         // draw the bars
         for (size_t i = 0; i < count; ++i) {
             gfx::spoint16& pt = pts[i];
